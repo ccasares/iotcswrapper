@@ -4,38 +4,53 @@
 var async = require('async')
   , dcl = require('./device-library.node')
   , Device = require('./device')
-  , log = require('npmlog')
+  , log = require('npmlog-ts')
   , util = require('util')
   , express = require('express')
   , WebSocketServer = require('ws').Server
   , http = require('http')
   , bodyParser = require('body-parser')
+  , queue = require('block-queue')
+  , _ = require('lodash')
 ;
 
-// Initializing IoTCS stuff BEGIN
+// Misc BEGIN
+const PROCESSNAME = "Anki Overdrive demo - IoTCS Wrapper";
+const VERSION = "v1.0";
+const AUTHOR  = "Carlos Casares <carlos.casares@oracle.com>";
+const PROCESS = 'PROCESS';
+const IOTCS   = 'IOTCS';
+const REST    = "REST";
+const QUEUE   = "QUEUE";
+const DATA    = "DATA";
+const ALERT   = "ALERT";
+const ANKI    = "Anki Car";
+log.level ='verbose';
+log.timestamp = true;
+// Misc END
+
+// Initializing IoTCS variables BEGIN
 dcl = dcl({debug: false});
 var storePassword = 'welcome1';
 var urn = [
-     'urn:oracle:iot:device:data:anki:car:speed'
-   , 'urn:oracle:iot:device:data:anki:car:lap'
+     'urn:oracle:iot:device:data:anki:car:lap'
+   , 'urn:oracle:iot:device:data:anki:car:speed'
    , 'urn:oracle:iot:device:data:anki:car:transition'
-//   , 'urn:oracle:iot:device:event:anki:car:offtrack'
 ];
-var carSpeed      = new Device(urn[0]);
-var carLap        = new Device(urn[1]);
-var carTransition = new Device(urn[2]);
-var devices = [ carSpeed, carLap, carTransition];
+
+var alerts = [
+  { deviceUrn: 'urn:oracle:iot:device:data:anki:car:speed', alertUrn: 'urn:oracle:iot:device:event:anki:car:offtrack' }
+];
+
+var car = new Device(ANKI);
 
 // Init Devices
-carSpeed.setStoreFile(process.argv[2], storePassword);
-carSpeed.setUrn(urn);
-carLap.setStoreFile(process.argv[2], storePassword);
-carLap.setUrn(urn);
-carTransition.setStoreFile(process.argv[2], storePassword);
-carTransition.setUrn(urn);
-// Initializing IoTCS stuff END
+car.setStoreFile(process.argv[2], storePassword);
+car.setUrn(urn);
+var devices = [ car ];
+// Initializing IoTCS variables END
 
-// Initializing REST & WS stuff BEGIN
+// Initializing REST & WS variables BEGIN
 var PORT = process.env.PORT || 8888;
 var wsURI = '/ws';
 var restURI = '/iot';
@@ -50,45 +65,15 @@ var app    = express()
       return true;
     }
   });
-  ;
+;
+// Initializing REST & WS variables END
 
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
+// Initializing QUEUE variables BEGIN
+var q = undefined;
+var queueConcurrency = 1;
+// Initializing QUEUE variables END
 
-
-wss.on('connection', function(ws) {
-  console.log("WS session connected");
-  ws.on('close', function() {
-    console.log("WS session disconnected");
-  });
-  ws.on('message', function(data, flags) {
-    console.log("WS Data: " + data);
-    ws.send("Hello, " + data);
-  });
-});
-
-router.post('/', function(req, res) {
-  console.log("POST request: " + JSON.stringify(req.body));
-  var response = req.body;
-  response.result = "OK";
-  res.send(response);
-});
-
-app.use(restURI, router);
-
-server.listen(PORT, function() {
-  log.info(PROCESS, "REST server running on http://localhost:" + PORT + restURI);
-  log.info(PROCESS, "WS server running on http://localhost:" + PORT + wsURI);
-});
-
-// Initializing REST & WS stuff END
-
-// Misc BEGIN
-const PROCESS = 'PROCESS';
-const IOTCS   = 'IOTCS';
-log.level ='verbose';
-// Misc END
-
+// IoTCS helpers BEGIN
 function getModel(device, urn, callback) {
   device.getDeviceModel(urn, function (response, error) {
     if (error) {
@@ -97,6 +82,7 @@ function getModel(device, urn, callback) {
     callback(null, response);
   });
 }
+// IoTCS helpers END
 
 // Main handlers registration - BEGIN
 // Main error handler
@@ -118,72 +104,156 @@ process.on('SIGINT', function() {
 // Sequentially, we initialize IoTCS and then the WS and REST servers
 
 async.series( {
-  iot: function(callback) {
+  init: function(callback) {
+    log.info(PROCESS, "%s - %s", PROCESSNAME, VERSION);
+    log.info(PROCESS, "Author - %s", AUTHOR);
+    callback(null);
+  },
+  iot: function(callbackMainSeries) {
     log.info(IOTCS, "Initializing IoTCS devices");
-    async.eachSeries( devices, function(d, cb) {
+    log.info(IOTCS, "Using IoTCS JavaScript Libraries v" + dcl.version);
+    async.eachSeries( devices, function(d, callbackEachSeries) {
       async.series( [
-        function(cb1) {
+        function(callbackSeries) {
           // Initialize Device
           log.verbose(IOTCS, "Initializing IoT device '" + d.getName() + "'");
           d.setIotDcd(new dcl.device.DirectlyConnectedDevice(d.getIotStoreFile(), d.getIotStorePassword()));
-          cb1(null);
+          callbackSeries(null);
         },
-        function(cb2) {
+        function(callbackSeries) {
           // Check if already activated. If not, activate it
           if (!d.getIotDcd().isActivated()) {
             log.verbose(IOTCS, "Activating IoT device '" + d.getName() + "'");
             d.getIotDcd().activate(d.getUrn(), function (device, error) {
               if (error) {
                 log.error(IOTCS, "Error in activating '" + d.getName() + "' device (" + d.getUrn() + "). Error: " + error.message);
-                cb2(error);
+                callbackSeries(error);
               }
               d.setIotDcd(device);
               if (!d.getIotDcd().isActivated()) {
                 log.error(IOTCS, "Device '" + d.getName() + "' successfully activated, but not marked as Active (?). Aborting.");
-                cb2("Not activated");
+                callbackSeries("ERROR: Successfully activated but not marked as Active");
               }
-              cb2(null);
+              callbackSeries(null);
             });
           } else {
             log.verbose(IOTCS, "'" + d.getName() + "' device is already activated");
-            cb2(null);
+            callbackSeries(null);
           }
         },
-        function(cb3) {
-          // When here, the device should be activated. get device model
-          getModel(d.getIotDcd(), d.getName(), (function (error, model) {
-            if (error !== null) {
-              log.error(IOTCS, "Error in retrieving '" + d.getName() + "' model. Error: " + error.message);
-              cb3(error);
+        function(callbackSeries) {
+          // When here, the device should be activated. Get device models, one per URN registered
+          async.eachSeries(d.getUrn(), function(urn, callbackEachSeriesUrn) {
+            getModel(d.getIotDcd(), urn, (function (error, model) {
+              if (error !== null) {
+                log.error(IOTCS, "Error in retrieving '" + urn + "' model. Error: " + error.message);
+                callbackEachSeriesUrn(error);
+              } else {
+                d.setIotVd(urn, model, d.getIotDcd().createVirtualDevice(d.getIotDcd().getEndpointId(), model));
+                log.verbose(IOTCS, "'" + urn + "' intialized successfully");
+              }
+              callbackEachSeriesUrn(null);
+            }).bind(this));
+          }, function(err) {
+            if (err) {
+              callbackSeries(err);
             } else {
-              d.setIotModel(model);
-              d.setIotVd(d.getIotDcd().createVirtualDevice(d.getIotDcd().getEndpointId(), model));
-              log.verbose(IOTCS, "'" + d.getName() + "' intialized successfully");
-              console.log(util.inspect(model, true, null));
+              callbackSeries(null, true);
             }
-            cb3();
-          }).bind(this));
+          });
         }
       ], function(err, results) {
-        cb();
+        callbackEachSeries();
       });
     }, function(err) {
       if (err) {
-        callback(err);
+        callbackMainSeries(err);
       } else {
-        callback(null, true);
+        log.info(IOTCS, "IoTCS devices initialized successfully");
+        callbackMainSeries(null, true);
       }
     });
   },
   websockets: function(callback) {
-
+    // TODO
+    callback(null)
+  },
+  queue: function(callback) {
+    log.info(QUEUE, "Initializing QUEUE system");
+    q = queue(queueConcurrency, (task, done) => {
+      if ( task.type === DATA) {
+        log.verbose(QUEUE, "Processing: %j", task);
+        var vd = car.getIotVd(task.urn);
+        if (vd) {
+          vd.update(task.data);
+        } else {
+          log.error(QUEUE, "URN not registered: " + task.urn);
+        }
+      } else if ( task.type === ALERT) {
+        var a = _.find(alerts, {alertUrn: task.urn});
+        if (a) {
+          var vd = car.getIotVd(a.deviceUrn);
+          if (vd) {
+            var alert = vd.createAlert(task.urn);
+            Object.keys(task.data).forEach(function(key) {
+              alert.fields[key] = task.data[key];
+            });
+            alert.raise();
+            log.verbose(IOTCS, "%s alert raised with data %j", task.urn, task.data);
+          } else {
+            log.error(QUEUE, "Device for alert '" + a.alertUrn + "' not registered: " + a.deviceUrn);
+          }
+        } else {
+          log.error(QUEUE, "Alert URN not registered: " + task.urn);
+        }
+      } else {
+        // should never happen
+      }
+      done(); // Let queue handle next task
+    });
+    log.info(QUEUE, "QUEUE system initialized successfully");
+    callback(null)
   },
   rest: function(callback) {
-
+    log.info(REST, "Initializing REST Server");
+    app.use(bodyParser.urlencoded({ extended: true }));
+    app.use(bodyParser.json());
+    app.use(restURI, router);
+    router.post('/send/data/:urn', function(req, res) {
+      var urn = req.params.urn;
+      var body = req.body;
+      log.verbose(REST, "Send '" + DATA + "' method invoked for URN '" + urn + "' with data: %j", body);
+      q.push({
+        type: DATA,
+        urn: urn,
+        data: body
+      });
+      res.send({result:"Message queued for processing"});
+    });
+    router.post('/send/alert/:urn', function(req, res) {
+      var urn = req.params.urn;
+      var body = req.body;
+      log.verbose(REST, "Send '" + ALERT + "' method invoked for URN '" + urn + "' with data: %j", body);
+      q.push({
+        type: ALERT,
+        urn: urn,
+        data: body
+      });
+      res.send({result:"Message queued for processing"});
+    });
+    server.listen(PORT, function() {
+      log.info(REST, "REST Server initialized successfully");
+      callback(null);
+    });
   }
 }, function(err, results) {
   if (err) {
+    // TODO
   } else {
+    _.each(router.stack, (r) => {
+      // We take just the first element in router.stack.route.methods[] as we assume one HTTP VERB at most per URI
+      log.info(PROCESS, "'" + _.keys(r.route.methods)[0].toUpperCase() + "' method available at http://localhost:" + PORT + restURI + r.route.path);
+    });
     log.info(PROCESS, 'Initialization completed');
   }
 });
