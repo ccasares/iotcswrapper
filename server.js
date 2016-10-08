@@ -27,6 +27,7 @@ const ALERT   = "ALERT";
 const ANKI    = "Anki Car";
 log.level ='verbose';
 log.timestamp = true;
+var mainStatus = "STARTING";
 // Misc END
 
 // Initializing IoTCS variables BEGIN
@@ -51,9 +52,12 @@ var devices = [ car ];
 // Initializing IoTCS variables END
 
 // Initializing REST & WS variables BEGIN
-var PORT = process.env.PORT || 8888;
-var wsURI = '/ws';
-var restURI = '/iot';
+const PORT = process.env.PORT || 8888;
+const wsURI = '/ws';
+const restURI = '/iot';
+const sendDataURI = '/send/data/:urn';
+const sendAlertURI = '/send/alert/:urn';
+const getStatusURI = '/status';
 
 var app    = express()
   , router = express.Router()
@@ -113,6 +117,7 @@ async.series( {
     log.info(IOTCS, "Initializing IoTCS devices");
     log.info(IOTCS, "Using IoTCS JavaScript Libraries v" + dcl.version);
     async.eachSeries( devices, function(d, callbackEachSeries) {
+      mainStatus = "INITDEV";
       async.series( [
         function(callbackSeries) {
           // Initialize Device
@@ -126,11 +131,13 @@ async.series( {
             log.verbose(IOTCS, "Activating IoT device '" + d.getName() + "'");
             d.getIotDcd().activate(d.getUrn(), function (device, error) {
               if (error) {
+                mainStatus = "ERRORACT";
                 log.error(IOTCS, "Error in activating '" + d.getName() + "' device (" + d.getUrn() + "). Error: " + error.message);
                 callbackSeries(error);
               }
               d.setIotDcd(device);
               if (!d.getIotDcd().isActivated()) {
+                mainStatus = "ERRORACT";
                 log.error(IOTCS, "Device '" + d.getName() + "' successfully activated, but not marked as Active (?). Aborting.");
                 callbackSeries("ERROR: Successfully activated but not marked as Active");
               }
@@ -143,9 +150,11 @@ async.series( {
         },
         function(callbackSeries) {
           // When here, the device should be activated. Get device models, one per URN registered
+          mainStatus = "INITMOD";
           async.eachSeries(d.getUrn(), function(urn, callbackEachSeriesUrn) {
             getModel(d.getIotDcd(), urn, (function (error, model) {
               if (error !== null) {
+                mainStatus = "ERRMOD";
                 log.error(IOTCS, "Error in retrieving '" + urn + "' model. Error: " + error.message);
                 callbackEachSeriesUrn(error);
               } else {
@@ -163,12 +172,13 @@ async.series( {
           });
         }
       ], function(err, results) {
-        callbackEachSeries();
+        callbackEachSeries(err);
       });
     }, function(err) {
       if (err) {
         callbackMainSeries(err);
       } else {
+        mainStatus = "IOTDEVOK";
         log.info(IOTCS, "IoTCS devices initialized successfully");
         callbackMainSeries(null, true);
       }
@@ -219,7 +229,7 @@ async.series( {
     app.use(bodyParser.urlencoded({ extended: true }));
     app.use(bodyParser.json());
     app.use(restURI, router);
-    router.post('/send/data/:urn', function(req, res) {
+    router.post(sendDataURI, function(req, res) {
       var urn = req.params.urn;
       var body = req.body;
       log.verbose(REST, "Send '" + DATA + "' method invoked for URN '" + urn + "' with data: %j", body);
@@ -230,7 +240,7 @@ async.series( {
       });
       res.send({result:"Message queued for processing"});
     });
-    router.post('/send/alert/:urn', function(req, res) {
+    router.post(sendAlertURI, function(req, res) {
       var urn = req.params.urn;
       var body = req.body;
       log.verbose(REST, "Send '" + ALERT + "' method invoked for URN '" + urn + "' with data: %j", body);
@@ -241,6 +251,10 @@ async.series( {
       });
       res.send({result:"Message queued for processing"});
     });
+    router.get(getStatusURI, function(req, res) {
+      res.send(mainStatus);
+    });
+    mainStatus = "ALLOK";
     server.listen(PORT, function() {
       log.info(REST, "REST Server initialized successfully");
       callback(null);
@@ -249,6 +263,7 @@ async.series( {
 }, function(err, results) {
   if (err) {
     // TODO
+    log.error("Error during initialization: %s", err);
   } else {
     _.each(router.stack, (r) => {
       // We take just the first element in router.stack.route.methods[] as we assume one HTTP VERB at most per URI
