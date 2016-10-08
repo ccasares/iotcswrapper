@@ -12,6 +12,7 @@ var async = require('async')
   , bodyParser = require('body-parser')
   , queue = require('block-queue')
   , _ = require('lodash')
+  , isReachable = require('is-reachable')
 ;
 
 // Misc BEGIN
@@ -121,8 +122,9 @@ async.series( {
       async.series( [
         function(callbackSeries) {
           // Initialize Device
-          log.verbose(IOTCS, "Initializing IoT device '" + d.getName() + "'");
+          log.info(IOTCS, "Initializing IoT device '" + d.getName() + "'");
           d.setIotDcd(new dcl.device.DirectlyConnectedDevice(d.getIotStoreFile(), d.getIotStorePassword()));
+          log.verbose(IOTCS, "Endpoint id: %s", d.getIotDcd().getEndpointId());
           callbackSeries(null);
         },
         function(callbackSeries) {
@@ -179,7 +181,7 @@ async.series( {
         callbackMainSeries(err);
       } else {
         mainStatus = "IOTDEVOK";
-        log.info(IOTCS, "IoTCS devices initialized successfully");
+        log.info(IOTCS, "IoTCS device initialized successfully");
         callbackMainSeries(null, true);
       }
     });
@@ -263,7 +265,7 @@ async.series( {
 }, function(err, results) {
   if (err) {
     // TODO
-    log.error("Error during initialization: %s", err);
+    log.error("Error during initialization: " + err);
   } else {
     _.each(router.stack, (r) => {
       // We take just the first element in router.stack.route.methods[] as we assume one HTTP VERB at most per URI
