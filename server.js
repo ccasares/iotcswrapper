@@ -58,7 +58,7 @@ var devices = [ car ];
 // Initializing IoTCS variables END
 
 // Initializing REST & WS variables BEGIN
-const PORT = process.env.PORT || 8888;
+const PORT = process.env.IOTPORT || 8888;
 const wsURI = '/ws';
 const restURI = '/iot';
 const sendDataURI = '/send/data/:urn';
